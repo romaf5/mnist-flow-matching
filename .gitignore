@@ -1,0 +1,11 @@
+data/
+output/
+venv/
+__pycache__/
+*.pyc
+.claude/
+
+# Old files (merged into clean modules)
+mnist_flow_matching.py
+evaluate_synthetic.py
+eval_real_baseline.py
