@@ -1,10 +1,9 @@
 """
-Train a flow matching generative model on MNIST.
+Train a flow matching generative model.
 
 Based on "An Introduction to Flow Matching and Diffusion Models" (arxiv 2506.02070)
 
-Flow matching learns a vector field u_t(x) that transports samples from
-a simple prior p_0 = N(0, I) to the data distribution p_1 = p_data.
+Supports MNIST, Fashion-MNIST, and CIFAR-10.
 
 Conditional Optimal Transport path:
     x_t = t * z + (1 - t) * epsilon
@@ -28,15 +27,43 @@ from model import UNet
 from sample import sample
 
 
-def sample_and_save(model, device, epoch, args):
+DATASET_CONFIG = {
+    "mnist":   {"cls": datasets.MNIST,        "channels": 1, "size": 28},
+    "fashion": {"cls": datasets.FashionMNIST, "channels": 1, "size": 28},
+    "cifar10": {"cls": datasets.CIFAR10,      "channels": 3, "size": 32},
+}
+
+
+def get_transform(ds_cfg):
+    if ds_cfg["channels"] == 1:
+        return transforms.Compose([
+            transforms.ToTensor(),
+            transforms.Normalize((0.5,), (0.5,)),
+        ])
+    else:
+        return transforms.Compose([
+            transforms.RandomHorizontalFlip(),
+            transforms.ToTensor(),
+            transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
+        ])
+
+
+def sample_and_save(model, device, epoch, args, ds_cfg):
     """Generate a grid of samples and save as image."""
-    images = sample(model, device, n_samples=100, n_steps=args.sample_steps)
+    in_ch = ds_cfg["channels"]
+    img_size = ds_cfg["size"]
+    images = sample(model, device, n_samples=100, n_steps=args.sample_steps,
+                    in_channels=in_ch, img_size=img_size)
     images = images.cpu()
 
     fig, axes = plt.subplots(10, 10, figsize=(10, 10))
     for i in range(10):
         for j in range(10):
-            axes[i][j].imshow(images[i * 10 + j, 0], cmap='gray', vmin=0, vmax=1)
+            img = images[i * 10 + j]
+            if in_ch == 1:
+                axes[i][j].imshow(img[0], cmap='gray', vmin=0, vmax=1)
+            else:
+                axes[i][j].imshow(img.permute(1, 2, 0).clamp(0, 1))
             axes[i][j].axis('off')
     plt.suptitle(f'Epoch {epoch}', fontsize=16)
     plt.tight_layout()
@@ -50,18 +77,15 @@ def train(args):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
+    ds_cfg = DATASET_CONFIG[args.dataset]
     os.makedirs(args.output_dir, exist_ok=True)
 
-    transform = transforms.Compose([
-        transforms.ToTensor(),
-        transforms.Normalize((0.5,), (0.5,)),
-    ])
-    Dataset = datasets.FashionMNIST if args.dataset == "fashion" else datasets.MNIST
-    dataset = Dataset(args.data_dir, train=True, download=True, transform=transform)
+    transform = get_transform(ds_cfg)
+    dataset = ds_cfg["cls"](args.data_dir, train=True, download=True, transform=transform)
     loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True,
                         num_workers=4, pin_memory=True, drop_last=True)
 
-    model = UNet(base_channels=args.channels).to(device)
+    model = UNet(in_channels=ds_cfg["channels"], base_channels=args.channels).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs * len(loader))
 
@@ -103,21 +127,21 @@ def train(args):
         print(f"Epoch {epoch}/{args.epochs} | Loss: {avg_loss:.4f}")
 
         if epoch % args.sample_every == 0 or epoch == args.epochs:
-            sample_and_save(model, device, epoch, args)
+            sample_and_save(model, device, epoch, args, ds_cfg)
 
     torch.save(model.state_dict(), os.path.join(args.output_dir, "model.pt"))
     print(f"Model saved to {args.output_dir}/model.pt")
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Train flow matching on MNIST")
+    parser = argparse.ArgumentParser(description="Train flow matching")
     parser.add_argument("--epochs", type=int, default=20)
     parser.add_argument("--batch-size", type=int, default=256)
     parser.add_argument("--lr", type=float, default=2e-4)
     parser.add_argument("--channels", type=int, default=64)
     parser.add_argument("--sample-every", type=int, default=5)
     parser.add_argument("--sample-steps", type=int, default=100)
-    parser.add_argument("--dataset", type=str, default="mnist", choices=["mnist", "fashion"])
+    parser.add_argument("--dataset", type=str, default="mnist", choices=["mnist", "fashion", "cifar10"])
     parser.add_argument("--data-dir", type=str, default="./data")
     parser.add_argument("--output-dir", type=str, default="./output")
     args = parser.parse_args()

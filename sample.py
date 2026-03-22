@@ -19,14 +19,13 @@ from model import UNet
 
 
 @torch.no_grad()
-def sample(model, device, n_samples=64, n_steps=100, class_label=None, cfg_scale=2.0):
-    """
-    Generate images using Euler integration of the learned vector field.
-    """
+def sample(model, device, n_samples=64, n_steps=100, class_label=None, cfg_scale=2.0,
+           in_channels=1, img_size=28):
+    """Generate images using Euler integration of the learned vector field."""
     model.eval()
     h = 1.0 / n_steps
 
-    x = torch.randn(n_samples, 1, 28, 28, device=device)
+    x = torch.randn(n_samples, in_channels, img_size, img_size, device=device)
 
     if class_label is not None:
         labels = torch.full((n_samples,), class_label, device=device, dtype=torch.long)
@@ -52,13 +51,14 @@ def sample(model, device, n_samples=64, n_steps=100, class_label=None, cfg_scale
 
 def main(args):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = UNet(base_channels=args.channels).to(device)
+    model = UNet(in_channels=args.in_channels, base_channels=args.channels).to(device)
     model.load_state_dict(torch.load(os.path.join(args.model_dir, "model.pt"),
                                      map_location=device, weights_only=True))
 
     images = sample(model, device, n_samples=args.n_samples,
                     n_steps=args.sample_steps, class_label=args.digit,
-                    cfg_scale=args.cfg_scale)
+                    cfg_scale=args.cfg_scale,
+                    in_channels=args.in_channels, img_size=args.img_size)
     images = images.cpu()
 
     n = int(math.ceil(math.sqrt(args.n_samples)))
@@ -68,7 +68,11 @@ def main(args):
             idx = i * n + j
             ax = axes[i][j] if n > 1 else axes
             if idx < args.n_samples:
-                ax.imshow(images[idx, 0], cmap='gray', vmin=0, vmax=1)
+                img = images[idx]
+                if args.in_channels == 1:
+                    ax.imshow(img[0], cmap='gray', vmin=0, vmax=1)
+                else:
+                    ax.imshow(img.permute(1, 2, 0).clamp(0, 1))
             ax.axis('off')
     plt.tight_layout()
 
@@ -80,12 +84,14 @@ def main(args):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Generate MNIST images")
+    parser = argparse.ArgumentParser(description="Generate images")
     parser.add_argument("--n-samples", type=int, default=64)
     parser.add_argument("--sample-steps", type=int, default=100)
     parser.add_argument("--digit", type=int, default=None)
     parser.add_argument("--cfg-scale", type=float, default=2.0)
     parser.add_argument("--channels", type=int, default=64)
+    parser.add_argument("--in-channels", type=int, default=1)
+    parser.add_argument("--img-size", type=int, default=28)
     parser.add_argument("--model-dir", type=str, default="./output")
     parser.add_argument("--output-dir", type=str, default="./output")
     args = parser.parse_args()

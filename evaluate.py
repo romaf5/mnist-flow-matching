@@ -1,10 +1,12 @@
 """
-Evaluate quality of generated MNIST data.
+Evaluate quality of generated data.
 
 Trains a CNN classifier on synthetic data from the flow matching model,
-then evaluates on real and synthetic datasets. Optionally trains a baseline
-classifier on real data for comparison. Outputs confusion matrices,
-correlation matrices, and accuracy comparison plots.
+then evaluates on real and synthetic datasets. Trains a baseline
+classifier on real data for comparison. Outputs confusion matrices
+and accuracy comparison plots.
+
+Supports MNIST, Fashion-MNIST, and CIFAR-10.
 """
 
 import torch
@@ -18,34 +20,37 @@ import numpy as np
 import os
 import argparse
 
-from model import UNet, MNISTClassifier
+from model import UNet, Classifier
 from sample import sample
+from train import DATASET_CONFIG
 
 
 # ---------- Synthetic data generation ----------
 
 def generate_synthetic_dataset(gen_model, device, samples_per_class=6000,
-                               n_steps=100, cfg_scale=2.0, batch_size=500):
+                               n_steps=100, cfg_scale=2.0, batch_size=500,
+                               in_channels=1, img_size=28):
     """Generate a full labeled synthetic dataset."""
     gen_model.eval()
     all_images = []
     all_labels = []
 
-    for digit in range(10):
-        print(f"  Generating digit {digit}...")
-        images_for_digit = []
+    for cls in range(10):
+        print(f"  Generating class {cls}...")
+        images_for_cls = []
         remaining = samples_per_class
 
         while remaining > 0:
             n = min(batch_size, remaining)
             imgs = sample(gen_model, device, n_samples=n, n_steps=n_steps,
-                          class_label=digit, cfg_scale=cfg_scale)
+                          class_label=cls, cfg_scale=cfg_scale,
+                          in_channels=in_channels, img_size=img_size)
             imgs = imgs * 2 - 1  # [0,1] -> [-1,1]
-            images_for_digit.append(imgs.cpu())
+            images_for_cls.append(imgs.cpu())
             remaining -= n
 
-        all_images.append(torch.cat(images_for_digit, dim=0)[:samples_per_class])
-        all_labels.append(torch.full((samples_per_class,), digit, dtype=torch.long))
+        all_images.append(torch.cat(images_for_cls, dim=0)[:samples_per_class])
+        all_labels.append(torch.full((samples_per_class,), cls, dtype=torch.long))
 
     images = torch.cat(all_images, dim=0)
     labels = torch.cat(all_labels, dim=0)
@@ -127,33 +132,6 @@ def plot_confusion_matrix(cm, title, path):
     plt.close()
 
 
-def plot_correlation_matrix(cm, title, path):
-    cm_norm = cm.astype(float)
-    row_sums = cm_norm.sum(axis=1, keepdims=True)
-    row_sums[row_sums == 0] = 1
-    cm_norm = cm_norm / row_sums
-    corr = np.corrcoef(cm_norm)
-
-    fig, ax = plt.subplots(figsize=(8, 7))
-    im = ax.imshow(corr, interpolation='nearest', cmap='RdBu_r', vmin=-1, vmax=1)
-    ax.set_title(title, fontsize=14)
-    plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
-
-    for i in range(corr.shape[0]):
-        for j in range(corr.shape[1]):
-            ax.text(j, i, f'{corr[i, j]:.2f}',
-                    ha='center', va='center', fontsize=7,
-                    color='white' if abs(corr[i, j]) > 0.5 else 'black')
-
-    ax.set_xlabel('Digit', fontsize=12)
-    ax.set_ylabel('Digit', fontsize=12)
-    ax.set_xticks(range(10))
-    ax.set_yticks(range(10))
-    plt.tight_layout()
-    plt.savefig(path, dpi=150, bbox_inches='tight')
-    plt.close()
-
-
 def plot_comparison(results, path):
     """Bar chart comparing accuracies."""
     names = list(results.keys())
@@ -183,14 +161,24 @@ def main(args):
     print(f"Using device: {device}")
     os.makedirs(args.output_dir, exist_ok=True)
 
+    ds_cfg = DATASET_CONFIG[args.dataset]
+    in_ch = ds_cfg["channels"]
+    img_size = ds_cfg["size"]
+
     # Load real datasets
-    transform = transforms.Compose([
-        transforms.ToTensor(),
-        transforms.Normalize((0.5,), (0.5,)),
-    ])
-    Dataset = datasets.FashionMNIST if args.dataset == "fashion" else datasets.MNIST
-    real_train = Dataset(args.data_dir, train=True, download=True, transform=transform)
-    real_test = Dataset(args.data_dir, train=False, download=True, transform=transform)
+    if in_ch == 1:
+        transform = transforms.Compose([
+            transforms.ToTensor(),
+            transforms.Normalize((0.5,), (0.5,)),
+        ])
+    else:
+        transform = transforms.Compose([
+            transforms.ToTensor(),
+            transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
+        ])
+
+    real_train = ds_cfg["cls"](args.data_dir, train=True, download=True, transform=transform)
+    real_test = ds_cfg["cls"](args.data_dir, train=False, download=True, transform=transform)
     real_train_loader = DataLoader(real_train, batch_size=256, shuffle=True, num_workers=4, pin_memory=True)
     real_test_loader = DataLoader(real_test, batch_size=256, num_workers=4, pin_memory=True)
 
@@ -198,7 +186,7 @@ def main(args):
 
     # --- Synthetic-trained classifier ---
     print("\nLoading flow matching model...")
-    gen_model = UNet(base_channels=args.channels).to(device)
+    gen_model = UNet(in_channels=in_ch, base_channels=args.channels).to(device)
     gen_model.load_state_dict(torch.load(
         os.path.join(args.model_dir, "model.pt"),
         map_location=device, weights_only=True))
@@ -208,7 +196,9 @@ def main(args):
         gen_model, device,
         samples_per_class=args.samples_per_class,
         n_steps=args.sample_steps,
-        cfg_scale=args.cfg_scale)
+        cfg_scale=args.cfg_scale,
+        in_channels=in_ch,
+        img_size=img_size)
     print(f"  Synthetic dataset: {len(syn_images)} images")
 
     syn_dataset = TensorDataset(syn_images, syn_labels)
@@ -216,13 +206,12 @@ def main(args):
     syn_eval_loader = DataLoader(syn_dataset, batch_size=256, num_workers=4, pin_memory=True)
 
     print("\nTraining classifier on SYNTHETIC data...")
-    syn_classifier = MNISTClassifier().to(device)
+    syn_classifier = Classifier(in_channels=in_ch, img_size=img_size).to(device)
     train_classifier(syn_classifier, syn_train_loader, device, epochs=args.clf_epochs)
 
     print("\nEvaluating synthetic-trained classifier...")
     acc, preds, labels = evaluate(syn_classifier, real_train_loader, device)
     print(f"  Real Train Accuracy:  {acc:.2f}%")
-    cm_syn_on_real_train = compute_confusion_matrix(preds, labels)
 
     acc, preds, labels = evaluate(syn_classifier, real_test_loader, device)
     results['Synthetic\nTraining'] = acc
@@ -231,11 +220,10 @@ def main(args):
 
     acc, preds, labels = evaluate(syn_classifier, syn_eval_loader, device)
     print(f"  Synthetic Accuracy:   {acc:.2f}%")
-    cm_syn_on_syn = compute_confusion_matrix(preds, labels)
 
     # --- Real-trained classifier ---
     print("\nTraining classifier on REAL data...")
-    real_classifier = MNISTClassifier().to(device)
+    real_classifier = Classifier(in_channels=in_ch, img_size=img_size).to(device)
     train_classifier(real_classifier, real_train_loader, device, epochs=args.clf_epochs)
 
     print("\nEvaluating real-trained classifier...")
@@ -246,20 +234,10 @@ def main(args):
 
     # --- Plots ---
     print("\nSaving plots...")
-    plot_confusion_matrix(cm_syn_on_real_train, 'Synthetic-Trained — Real Train Data',
-                          os.path.join(args.output_dir, 'cm_syn_on_real_train.png'))
     plot_confusion_matrix(cm_syn_on_real_test, 'Synthetic-Trained — Real Test Data',
                           os.path.join(args.output_dir, 'cm_syn_on_real_test.png'))
-    plot_confusion_matrix(cm_syn_on_syn, 'Synthetic-Trained — Synthetic Data',
-                          os.path.join(args.output_dir, 'cm_syn_on_syn.png'))
     plot_confusion_matrix(cm_real_on_real_test, 'Real-Trained — Real Test Data',
                           os.path.join(args.output_dir, 'cm_real_on_real_test.png'))
-
-    plot_correlation_matrix(cm_syn_on_real_test, 'Class Correlation — Synthetic-Trained',
-                            os.path.join(args.output_dir, 'corr_syn.png'))
-    plot_correlation_matrix(cm_real_on_real_test, 'Class Correlation — Real-Trained',
-                            os.path.join(args.output_dir, 'corr_real.png'))
-
     plot_comparison(results, os.path.join(args.output_dir, 'comparison.png'))
 
     # Summary
@@ -275,13 +253,13 @@ def main(args):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Evaluate synthetic MNIST data quality")
+    parser = argparse.ArgumentParser(description="Evaluate synthetic data quality")
     parser.add_argument("--model-dir", default="./output")
     parser.add_argument("--output-dir", default="./output/eval")
-    parser.add_argument("--dataset", type=str, default="mnist", choices=["mnist", "fashion"])
+    parser.add_argument("--dataset", type=str, default="mnist", choices=["mnist", "fashion", "cifar10"])
     parser.add_argument("--data-dir", default="./data")
     parser.add_argument("--channels", type=int, default=64)
-    parser.add_argument("--samples-per-class", type=int, default=6000)
+    parser.add_argument("--samples-per-class", type=int, default=5000)
     parser.add_argument("--sample-steps", type=int, default=100)
     parser.add_argument("--cfg-scale", type=float, default=2.0)
     parser.add_argument("--clf-epochs", type=int, default=10)

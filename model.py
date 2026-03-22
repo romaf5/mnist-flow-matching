@@ -1,9 +1,9 @@
 """
-Flow Matching U-Net for MNIST.
+Flow Matching U-Net.
 
 Lightweight U-Net that predicts the vector field u_t(x, t) for transporting
 samples from N(0, I) to the data distribution. Supports class-conditional
-generation via learned embeddings.
+generation via learned embeddings. Works with 28x28 (MNIST) and 32x32 (CIFAR-10).
 """
 
 import math
@@ -54,7 +54,8 @@ class ResBlock(nn.Module):
 
 class UNet(nn.Module):
     """
-    U-Net for 28x28 grayscale images.
+    U-Net for image generation.
+    Supports 28x28 (MNIST/Fashion-MNIST) and 32x32 (CIFAR-10).
     Predicts the vector field u_t(x, t).
     """
     def __init__(self, in_channels=1, base_channels=64, time_dim=128, num_classes=10):
@@ -71,20 +72,20 @@ class UNet(nn.Module):
         # Encoder
         self.enc1 = nn.Conv2d(in_channels, c, 3, padding=1)
         self.res1 = ResBlock(c, time_dim)
-        self.down1 = nn.Conv2d(c, c, 4, stride=2, padding=1)       # 28->14
+        self.down1 = nn.Conv2d(c, c, 4, stride=2, padding=1)       # /2
 
         self.res2 = ResBlock(c, time_dim)
-        self.down2 = nn.Conv2d(c, c * 2, 4, stride=2, padding=1)   # 14->7
+        self.down2 = nn.Conv2d(c, c * 2, 4, stride=2, padding=1)   # /4
 
         # Bottleneck
         self.res_mid1 = ResBlock(c * 2, time_dim)
         self.res_mid2 = ResBlock(c * 2, time_dim)
 
         # Decoder
-        self.up2 = nn.ConvTranspose2d(c * 2, c, 4, stride=2, padding=1)  # 7->14
+        self.up2 = nn.ConvTranspose2d(c * 2, c, 4, stride=2, padding=1)
         self.res3 = ResBlock(c * 2, time_dim)
 
-        self.up1 = nn.ConvTranspose2d(c * 2, c, 4, stride=2, padding=1)  # 14->28
+        self.up1 = nn.ConvTranspose2d(c * 2, c, 4, stride=2, padding=1)
         self.res4 = ResBlock(c * 2, time_dim)
 
         self.out = nn.Sequential(
@@ -119,20 +120,24 @@ class UNet(nn.Module):
         return self.out(h)
 
 
-class MNISTClassifier(nn.Module):
-    """Simple CNN classifier for MNIST."""
-    def __init__(self):
+class Classifier(nn.Module):
+    """Simple CNN classifier. Adapts to input channels and spatial size."""
+    def __init__(self, in_channels=1, img_size=28, num_classes=10):
         super().__init__()
-        self.conv1 = nn.Conv2d(1, 32, 3, padding=1)
+        self.conv1 = nn.Conv2d(in_channels, 32, 3, padding=1)
         self.conv2 = nn.Conv2d(32, 64, 3, padding=1)
+        self.conv3 = nn.Conv2d(64, 128, 3, padding=1)
         self.pool = nn.MaxPool2d(2)
-        self.fc1 = nn.Linear(64 * 7 * 7, 128)
-        self.fc2 = nn.Linear(128, 10)
         self.dropout = nn.Dropout(0.25)
 
+        pooled_size = img_size // 4  # two rounds of pool(2)
+        self.fc1 = nn.Linear(128 * pooled_size * pooled_size, 256)
+        self.fc2 = nn.Linear(256, num_classes)
+
     def forward(self, x):
-        x = self.pool(F.relu(self.conv1(x)))   # 28->14
-        x = self.pool(F.relu(self.conv2(x)))   # 14->7
+        x = self.pool(F.relu(self.conv1(x)))
+        x = self.pool(F.relu(self.conv2(x)))
+        x = F.relu(self.conv3(x))
         x = x.view(x.size(0), -1)
         x = F.relu(self.fc1(x))
         x = self.dropout(x)
