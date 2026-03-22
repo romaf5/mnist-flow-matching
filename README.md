@@ -8,6 +8,22 @@ Flow matching learns a vector field that transports samples from Gaussian noise 
 
 A classifier trained **only on synthetic data** achieves **96.35%** on real MNIST test set, vs **99.24%** from real data training (2.89% gap).
 
+### Generated Samples (Epoch 20)
+
+![Generated Samples](results/generated_samples.png)
+
+### Synthetic vs Real Training Accuracy
+
+![Accuracy Comparison](results/accuracy_comparison.png)
+
+### Confusion Matrix (Synthetic-Trained on Real Test Data)
+
+![Confusion Matrix](results/confusion_matrix.png)
+
+### Class Correlation Matrix
+
+![Correlation Matrix](results/correlation_matrix.png)
+
 ## Usage
 
 ```bash
