@@ -188,8 +188,9 @@ def main(args):
         transforms.ToTensor(),
         transforms.Normalize((0.5,), (0.5,)),
     ])
-    real_train = datasets.MNIST(args.data_dir, train=True, download=True, transform=transform)
-    real_test = datasets.MNIST(args.data_dir, train=False, download=True, transform=transform)
+    Dataset = datasets.FashionMNIST if args.dataset == "fashion" else datasets.MNIST
+    real_train = Dataset(args.data_dir, train=True, download=True, transform=transform)
+    real_test = Dataset(args.data_dir, train=False, download=True, transform=transform)
     real_train_loader = DataLoader(real_train, batch_size=256, shuffle=True, num_workers=4, pin_memory=True)
     real_test_loader = DataLoader(real_test, batch_size=256, num_workers=4, pin_memory=True)
 
@@ -277,6 +278,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Evaluate synthetic MNIST data quality")
     parser.add_argument("--model-dir", default="./output")
     parser.add_argument("--output-dir", default="./output/eval")
+    parser.add_argument("--dataset", type=str, default="mnist", choices=["mnist", "fashion"])
     parser.add_argument("--data-dir", default="./data")
     parser.add_argument("--channels", type=int, default=64)
     parser.add_argument("--samples-per-class", type=int, default=6000)

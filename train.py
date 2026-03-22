@@ -56,7 +56,8 @@ def train(args):
         transforms.ToTensor(),
         transforms.Normalize((0.5,), (0.5,)),
     ])
-    dataset = datasets.MNIST(args.data_dir, train=True, download=True, transform=transform)
+    Dataset = datasets.FashionMNIST if args.dataset == "fashion" else datasets.MNIST
+    dataset = Dataset(args.data_dir, train=True, download=True, transform=transform)
     loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True,
                         num_workers=4, pin_memory=True, drop_last=True)
 
@@ -116,6 +117,7 @@ if __name__ == "__main__":
     parser.add_argument("--channels", type=int, default=64)
     parser.add_argument("--sample-every", type=int, default=5)
     parser.add_argument("--sample-steps", type=int, default=100)
+    parser.add_argument("--dataset", type=str, default="mnist", choices=["mnist", "fashion"])
     parser.add_argument("--data-dir", type=str, default="./data")
     parser.add_argument("--output-dir", type=str, default="./output")
     args = parser.parse_args()
