@@ -120,25 +120,51 @@ class UNet(nn.Module):
         return self.out(h)
 
 
-class Classifier(nn.Module):
-    """Simple CNN classifier. Adapts to input channels and spatial size."""
-    def __init__(self, in_channels=1, img_size=28, num_classes=10):
+class _ClassifierBlock(nn.Module):
+    def __init__(self, in_ch, out_ch, stride=1):
         super().__init__()
-        self.conv1 = nn.Conv2d(in_channels, 32, 3, padding=1)
-        self.conv2 = nn.Conv2d(32, 64, 3, padding=1)
-        self.conv3 = nn.Conv2d(64, 128, 3, padding=1)
-        self.pool = nn.MaxPool2d(2)
-        self.dropout = nn.Dropout(0.25)
-
-        pooled_size = img_size // 4  # two rounds of pool(2)
-        self.fc1 = nn.Linear(128 * pooled_size * pooled_size, 256)
-        self.fc2 = nn.Linear(256, num_classes)
+        self.conv1 = nn.Conv2d(in_ch, out_ch, 3, stride=stride, padding=1, bias=False)
+        self.bn1 = nn.BatchNorm2d(out_ch)
+        self.conv2 = nn.Conv2d(out_ch, out_ch, 3, padding=1, bias=False)
+        self.bn2 = nn.BatchNorm2d(out_ch)
+        self.shortcut = nn.Sequential()
+        if stride != 1 or in_ch != out_ch:
+            self.shortcut = nn.Sequential(
+                nn.Conv2d(in_ch, out_ch, 1, stride=stride, bias=False),
+                nn.BatchNorm2d(out_ch),
+            )
 
     def forward(self, x):
-        x = self.pool(F.relu(self.conv1(x)))
-        x = self.pool(F.relu(self.conv2(x)))
-        x = F.relu(self.conv3(x))
-        x = x.view(x.size(0), -1)
-        x = F.relu(self.fc1(x))
-        x = self.dropout(x)
-        return self.fc2(x)
+        h = F.relu(self.bn1(self.conv1(x)))
+        h = self.bn2(self.conv2(h))
+        return F.relu(h + self.shortcut(x))
+
+
+class Classifier(nn.Module):
+    """ResNet-style classifier. Adapts to input channels and spatial size."""
+    def __init__(self, in_channels=1, img_size=28, num_classes=10):
+        super().__init__()
+        self.conv1 = nn.Conv2d(in_channels, 64, 3, padding=1, bias=False)
+        self.bn1 = nn.BatchNorm2d(64)
+
+        self.layer1 = nn.Sequential(
+            _ClassifierBlock(64, 64),
+            _ClassifierBlock(64, 64),
+        )
+        self.layer2 = nn.Sequential(
+            _ClassifierBlock(64, 128, stride=2),
+            _ClassifierBlock(128, 128),
+        )
+        self.layer3 = nn.Sequential(
+            _ClassifierBlock(128, 256, stride=2),
+            _ClassifierBlock(256, 256),
+        )
+        self.fc = nn.Linear(256, num_classes)
+
+    def forward(self, x):
+        x = F.relu(self.bn1(self.conv1(x)))
+        x = self.layer1(x)
+        x = self.layer2(x)
+        x = self.layer3(x)
+        x = F.adaptive_avg_pool2d(x, 1).view(x.size(0), -1)
+        return self.fc(x)

@@ -12,7 +12,7 @@ We evaluate by training a classifier **only on synthetic data** and testing on r
 |---------|:-:|:-:|:-:|
 | MNIST | 96.35% | 99.24% | 2.89% |
 | Fashion-MNIST | 86.36% | 91.56% | 5.20% |
-| CIFAR-10 | 65.64% | 75.54% | 9.90% |
+| CIFAR-10 | 83.01% | 93.86% | 10.85% |
 
 ### MNIST
 

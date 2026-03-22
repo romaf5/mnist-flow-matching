@@ -13,6 +13,7 @@ Loss:
     L = E[|| u_theta(x_t, t) - (z - epsilon) ||^2]
 """
 
+import copy
 import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
@@ -46,6 +47,12 @@ def get_transform(ds_cfg):
             transforms.ToTensor(),
             transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
         ])
+
+
+@torch.no_grad()
+def update_ema(ema_model, model, decay):
+    for ema_p, p in zip(ema_model.parameters(), model.parameters()):
+        ema_p.mul_(decay).add_(p, alpha=1 - decay)
 
 
 def sample_and_save(model, device, epoch, args, ds_cfg):
@@ -87,11 +94,31 @@ def train(args):
 
     model = UNet(in_channels=ds_cfg["channels"], base_channels=args.channels).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs * len(loader))
+
+    total_steps = args.epochs * len(loader)
+
+    # Warmup + cosine decay
+    def lr_lambda(step):
+        if step < args.warmup_steps:
+            return step / max(args.warmup_steps, 1)
+        progress = (step - args.warmup_steps) / max(total_steps - args.warmup_steps, 1)
+        return 0.5 * (1 + __import__('math').cos(__import__('math').pi * progress))
+
+    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
+
+    # EMA
+    ema_model = None
+    if args.ema_decay > 0:
+        ema_model = copy.deepcopy(model)
+        ema_model.eval()
+        for p in ema_model.parameters():
+            p.requires_grad_(False)
+        print(f"EMA enabled (decay={args.ema_decay})")
 
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"Model parameters: {n_params:,}")
 
+    global_step = 0
     for epoch in range(1, args.epochs + 1):
         model.train()
         total_loss = 0
@@ -121,16 +148,28 @@ def train(args):
             optimizer.step()
             scheduler.step()
 
+            if ema_model is not None:
+                update_ema(ema_model, model, args.ema_decay)
+
             total_loss += loss.item()
+            global_step += 1
 
         avg_loss = total_loss / len(loader)
-        print(f"Epoch {epoch}/{args.epochs} | Loss: {avg_loss:.4f}")
+        lr = optimizer.param_groups[0]['lr']
+        print(f"Epoch {epoch}/{args.epochs} | Loss: {avg_loss:.4f} | LR: {lr:.2e}")
 
         if epoch % args.sample_every == 0 or epoch == args.epochs:
-            sample_and_save(model, device, epoch, args, ds_cfg)
+            sample_model = ema_model if ema_model is not None else model
+            sample_and_save(sample_model, device, epoch, args, ds_cfg)
 
-    torch.save(model.state_dict(), os.path.join(args.output_dir, "model.pt"))
+    # Save model (prefer EMA if available)
+    save_model = ema_model if ema_model is not None else model
+    torch.save(save_model.state_dict(), os.path.join(args.output_dir, "model.pt"))
     print(f"Model saved to {args.output_dir}/model.pt")
+
+    # Also save the training model
+    if ema_model is not None:
+        torch.save(model.state_dict(), os.path.join(args.output_dir, "model_no_ema.pt"))
 
 
 if __name__ == "__main__":
@@ -144,5 +183,7 @@ if __name__ == "__main__":
     parser.add_argument("--dataset", type=str, default="mnist", choices=["mnist", "fashion", "cifar10"])
     parser.add_argument("--data-dir", type=str, default="./data")
     parser.add_argument("--output-dir", type=str, default="./output")
+    parser.add_argument("--ema-decay", type=float, default=0.0, help="EMA decay rate (0 to disable)")
+    parser.add_argument("--warmup-steps", type=int, default=0, help="LR warmup steps")
     args = parser.parse_args()
     train(args)

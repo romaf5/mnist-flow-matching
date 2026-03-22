@@ -25,6 +25,32 @@ from sample import sample
 from train import DATASET_CONFIG
 
 
+class AugmentedTensorDataset(torch.utils.data.Dataset):
+    """Wraps a TensorDataset with on-the-fly augmentation for training."""
+    def __init__(self, images, labels, augment=False):
+        self.images = images
+        self.labels = labels
+        self.augment = augment
+
+    def __len__(self):
+        return len(self.images)
+
+    def __getitem__(self, idx):
+        img = self.images[idx]
+        if self.augment:
+            # Random horizontal flip
+            if torch.rand(1).item() > 0.5:
+                img = img.flip(-1)
+            # Random crop with padding=4
+            pad = 4
+            img = F.pad(img, [pad] * 4, mode='reflect')
+            _, h, w = img.shape
+            top = torch.randint(0, 2 * pad, (1,)).item()
+            left = torch.randint(0, 2 * pad, (1,)).item()
+            img = img[:, top:top + h - 2 * pad, left:left + w - 2 * pad]
+        return img, self.labels[idx]
+
+
 # ---------- Synthetic data generation ----------
 
 def generate_synthetic_dataset(gen_model, device, samples_per_class=6000,
@@ -61,10 +87,11 @@ def generate_synthetic_dataset(gen_model, device, samples_per_class=6000,
 # ---------- Classifier training & evaluation ----------
 
 def train_classifier(model, loader, device, epochs=10):
-    optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
-    model.train()
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.1, momentum=0.9, weight_decay=5e-4)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
 
     for epoch in range(1, epochs + 1):
+        model.train()
         total_loss, correct, total = 0, 0, 0
         for x, y in loader:
             x, y = x.to(device), y.to(device)
@@ -79,6 +106,7 @@ def train_classifier(model, loader, device, epochs=10):
             correct += (logits.argmax(1) == y).sum().item()
             total += x.size(0)
 
+        scheduler.step()
         print(f"  Epoch {epoch}/{epochs} | Loss: {total_loss/total:.4f} | Acc: {100*correct/total:.1f}%")
 
 
@@ -167,19 +195,26 @@ def main(args):
 
     # Load real datasets
     if in_ch == 1:
-        transform = transforms.Compose([
+        train_transform = transforms.Compose([
             transforms.ToTensor(),
             transforms.Normalize((0.5,), (0.5,)),
         ])
+        test_transform = train_transform
     else:
-        transform = transforms.Compose([
+        train_transform = transforms.Compose([
+            transforms.RandomCrop(32, padding=4),
+            transforms.RandomHorizontalFlip(),
+            transforms.ToTensor(),
+            transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
+        ])
+        test_transform = transforms.Compose([
             transforms.ToTensor(),
             transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
         ])
 
-    real_train = ds_cfg["cls"](args.data_dir, train=True, download=True, transform=transform)
-    real_test = ds_cfg["cls"](args.data_dir, train=False, download=True, transform=transform)
-    real_train_loader = DataLoader(real_train, batch_size=256, shuffle=True, num_workers=4, pin_memory=True)
+    real_train = ds_cfg["cls"](args.data_dir, train=True, download=True, transform=train_transform)
+    real_test = ds_cfg["cls"](args.data_dir, train=False, download=True, transform=test_transform)
+    real_train_loader = DataLoader(real_train, batch_size=128, shuffle=True, num_workers=4, pin_memory=True)
     real_test_loader = DataLoader(real_test, batch_size=256, num_workers=4, pin_memory=True)
 
     results = {}
@@ -201,9 +236,11 @@ def main(args):
         img_size=img_size)
     print(f"  Synthetic dataset: {len(syn_images)} images")
 
-    syn_dataset = TensorDataset(syn_images, syn_labels)
-    syn_train_loader = DataLoader(syn_dataset, batch_size=256, shuffle=True, num_workers=4, pin_memory=True)
-    syn_eval_loader = DataLoader(syn_dataset, batch_size=256, num_workers=4, pin_memory=True)
+    use_aug = in_ch == 3  # augment RGB datasets
+    syn_train_dataset = AugmentedTensorDataset(syn_images, syn_labels, augment=use_aug)
+    syn_eval_dataset = TensorDataset(syn_images, syn_labels)
+    syn_train_loader = DataLoader(syn_train_dataset, batch_size=128, shuffle=True, num_workers=4, pin_memory=True)
+    syn_eval_loader = DataLoader(syn_eval_dataset, batch_size=256, num_workers=4, pin_memory=True)
 
     print("\nTraining classifier on SYNTHETIC data...")
     syn_classifier = Classifier(in_channels=in_ch, img_size=img_size).to(device)
@@ -262,6 +299,6 @@ if __name__ == "__main__":
     parser.add_argument("--samples-per-class", type=int, default=5000)
     parser.add_argument("--sample-steps", type=int, default=100)
     parser.add_argument("--cfg-scale", type=float, default=2.0)
-    parser.add_argument("--clf-epochs", type=int, default=10)
+    parser.add_argument("--clf-epochs", type=int, default=50)
     args = parser.parse_args()
     main(args)
